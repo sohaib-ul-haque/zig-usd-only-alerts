@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls -la \"/mnt/c/Users/muham\" 2>/dev/null; echo \"---\"; ls -la 2>/dev/null; pwd)",
+      "Read(//mnt/c/Users/**)",
+      "Bash(command -v wsl.exe)",
+      "Bash(command -v wsl)",
+      "Bash(\"/c/Program Files/WindowsApps/MicrosoftCorporationII.WindowsSubsystemForLinux_2.6.3.0_x64__8wekyb3d8bbwe/wsl.exe\" -e bash -lc \"grep -n 'STZIG_DENOM\\\\|ZIG_RPC_WS_BACKUP' /home/muhammadtalhaarif/zig-only-alerts/.env; echo ---; stat -c '%y %n' /home/muhammadtalhaarif/zig-only-alerts/src/monitor.ts /home/muhammadtalhaarif/zig-only-alerts/src/config.ts\")"
+    ]
+  }
+}
