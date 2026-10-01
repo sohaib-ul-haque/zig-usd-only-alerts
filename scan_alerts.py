@@ -28,8 +28,11 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 
 LCD_URL = "https://zigchain-mainnet-lcd.zigscan.net"
-THRESHOLD_ZIG = 60000.0
-UZIG_DECIMALS = 6  # standard cosmos-sdk micro-denom assumption; verify against one real tx
+ZIG_DENOM = "azig"
+ZIG_DECIMALS = 18
+ZIG_SCALE = 10 ** ZIG_DECIMALS
+THRESHOLD_RAW = 60000 * ZIG_SCALE
+AMOUNT_MATCH_TOLERANCE_RAW = ZIG_SCALE // 1000  # 0.001 ZIG
 
 # -----------------------------------------------------------------------
 # FILL THIS IN once you've confirmed labels on zigscan.org.
@@ -46,6 +49,27 @@ TRANSFER_RE = re.compile(
     r"(?P<src>zig1[0-9a-z]+)\.\.\.\s*->\s*(?P<dst>zig1[0-9a-z]+)\.\.\.\s+"
     r"(?P<amount>[\d,]+\.?\d*)\s+ZIG"
 )
+
+
+def zig_to_raw(amount):
+    """Convert a non-negative human ZIG string to exact integer azig units."""
+    normalized = amount.replace(",", "").strip()
+    whole, dot, fraction = normalized.partition(".")
+    if not whole.isdigit() or (dot and not fraction.isdigit()):
+        raise ValueError(f"Invalid ZIG amount: {amount}")
+    if len(fraction) > ZIG_DECIMALS:
+        discarded = fraction[ZIG_DECIMALS:]
+        if any(digit != "0" for digit in discarded):
+            raise ValueError(f"ZIG amount exceeds {ZIG_DECIMALS} decimal places: {amount}")
+        fraction = fraction[:ZIG_DECIMALS]
+    return int(whole) * ZIG_SCALE + int(fraction.ljust(ZIG_DECIMALS, "0") or "0")
+
+
+def raw_to_zig(raw_amount):
+    """Format integer azig units as an exact human ZIG string."""
+    whole, fraction = divmod(raw_amount, ZIG_SCALE)
+    fraction_text = str(fraction).zfill(ZIG_DECIMALS).rstrip("0")
+    return f"{whole}.{fraction_text}" if fraction_text else str(whole)
 
 
 def parse_ts(ts_str):
@@ -77,14 +101,15 @@ def find_qualifying_events(log_path, start_dt, end_dt):
                 ts = parse_ts(tmatch.group("ts"))
                 if not (start_dt <= ts < end_dt):
                     continue
-                amount = float(tmatch.group("amount").replace(",", ""))
-                if amount >= THRESHOLD_ZIG:
+                amount_raw = zig_to_raw(tmatch.group("amount"))
+                if amount_raw >= THRESHOLD_RAW:
                     qualifying.append({
                         "hash": current_hash,
                         "timestamp": ts.isoformat(),
                         "src_trunc": tmatch.group("src"),
                         "dst_trunc": tmatch.group("dst"),
-                        "amount_zig": amount,
+                        "amount_raw": amount_raw,
+                        "amount_zig": raw_to_zig(amount_raw),
                     })
     print(f"Scanned {total_lines:,} log lines. Found {len(qualifying)} qualifying transfer(s) "
           f"across {len({q['hash'] for q in qualifying})} unique tx hash(es).")
@@ -115,12 +140,17 @@ def fetch_tx_events(tx_hash, session, max_retries=3):
         attrs = {a["key"]: a["value"] for a in ev.get("attributes", [])}
         sender = attrs.get("sender", "")
         recipient = attrs.get("recipient", "")
-        amount_raw = attrs.get("amount", "")  # e.g. "60000000000uzig" or "5000uzig,3000uatom"
+        amount_raw = attrs.get("amount", "")  # e.g. "60000000000000000000000azig" or "5000azig,3000uatom"
         for part in amount_raw.split(","):
-            m = re.match(r"(\d+)uzig", part.strip())
+            m = re.fullmatch(rf"(\d+){re.escape(ZIG_DENOM)}", part.strip())
             if m:
-                amt_zig = int(m.group(1)) / (10 ** UZIG_DECIMALS)
-                events.append({"sender": sender, "recipient": recipient, "amount_zig": amt_zig})
+                raw_units = int(m.group(1))
+                events.append({
+                    "sender": sender,
+                    "recipient": recipient,
+                    "amount_raw": raw_units,
+                    "amount_zig": raw_to_zig(raw_units),
+                })
     return events
 
 
@@ -144,12 +174,13 @@ def match_full_addresses(qualifying, session):
             if match is None:
                 # fallback: match by closest amount if prefix match failed
                 for ev in events:
-                    if abs(ev["amount_zig"] - entry["amount_zig"]) < 0.001:
+                    if abs(ev["amount_raw"] - entry["amount_raw"]) < AMOUNT_MATCH_TOLERANCE_RAW:
                         match = ev
                         break
             results.append({
                 "hash": tx_hash,
                 "timestamp": entry["timestamp"],
+                "amount_raw": entry["amount_raw"],
                 "amount_zig": entry["amount_zig"],
                 "source_full": match["sender"] if match else entry["src_trunc"] + "... (NOT RESOLVED)",
                 "dest_full": match["recipient"] if match else entry["dst_trunc"] + "... (NOT RESOLVED)",
@@ -184,6 +215,8 @@ def write_excel(results, out_path):
         elif src_ex:
             direction = f"Withdrawal from {src_ex}"
         link = f"https://zigscan.org/tx/{r['hash']}"
+        # Store the human amount as an exact decimal string; Excel's numeric
+        # cells cannot preserve all 18 fractional digits.
         row = [r["hash"], r["timestamp"], r["amount_zig"], r["source_full"],
                r["dest_full"], exchange, direction, link]
         ws.append(row)

@@ -1,4 +1,5 @@
 import { config } from "./config";
+import { formatRawAmount, rawToDecimalString } from "./amount";
 
 const BASE = `https://api.telegram.org/bot${config.telegram.botToken}`;
 
@@ -26,15 +27,19 @@ async function sendToChat(text: string): Promise<void> {
 export async function sendAlert(
   symbol: string,
   denom: string,
-  amount: number,
-  rawAmount: string,
+  rawAmount: bigint,
+  decimals: number,
   sender: string,
   recipient: string,
   txHash: string,
   usdPrice: number | null,
   supportsUsd: boolean
 ): Promise<void> {
-  const usdValue = usdPrice !== null ? amount * usdPrice : null;
+  const amount = formatRawAmount(rawAmount, decimals);
+  // This Number conversion is deliberately limited to the cosmetic USD estimate.
+  // Denom matching and threshold decisions are completed with the exact bigint.
+  const approximateAmount = Number(rawToDecimalString(rawAmount, decimals));
+  const usdValue = usdPrice !== null ? approximateAmount * usdPrice : null;
 
   const usdLine = !supportsUsd
     ? ""
@@ -51,7 +56,7 @@ export async function sendAlert(
     `Direction: Received\n\n` +
     `Sender: ${sender}\n` +
     `Recipient: ${recipient}\n\n` +
-    `Amount: ${amount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${symbol} (${parseInt(rawAmount).toLocaleString()} ${denom})\n` +
+    `Amount: ${amount} ${symbol} (${rawAmount.toLocaleString("en-US")} ${denom})\n` +
     usdLine +
     `Type: Transfer\n\n` +
     `Tx: ${config.txExplorer}${txHash}`;

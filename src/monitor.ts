@@ -2,6 +2,7 @@ import WebSocket from "ws";
 import { config, AssetConfig } from "./config";
 import { sendAlert } from "./telegram";
 import { getUsdPrice } from "./price";
+import { formatRawAmount, parseRawAmount } from "./amount";
 
 interface FlatEvents {
   [key: string]: string[];
@@ -11,17 +12,17 @@ function first(events: FlatEvents, key: string): string | undefined {
   return events[key]?.[0];
 }
 
-function parseAmount(raw: string, denom: string): string | null {
+function parseAmount(raw: string, denom: string): bigint | null {
   // Pure digits - denom comes from separate field
   if (/^\d+$/.test(raw)) {
-    return raw;
+    return parseRawAmount(raw);
   }
 
-  // Combined string like "500000uzig"
-  if (raw.includes(denom)) {
-    const amountPart = raw.replace(denom, "").trim();
+  // Combined string like "500000azig"
+  if (raw.endsWith(denom)) {
+    const amountPart = raw.slice(0, -denom.length).trim();
     if (/^\d+$/.test(amountPart)) {
-      return amountPart;
+      return parseRawAmount(amountPart);
     }
   }
 
@@ -31,7 +32,7 @@ function parseAmount(raw: string, denom: string): string | null {
 interface Candidate {
   sender: string;
   recipient: string;
-  amountRaw: string;
+  amountRaw: bigint;
 }
 
 /**
@@ -57,7 +58,7 @@ function collectCandidates(events: FlatEvents, denom: string): Candidate[] {
     if (!sender || !recipient || !rawAmount) continue;
 
     const amountRaw = parseAmount(rawAmount, denom);
-    if (!amountRaw) continue;
+    if (amountRaw === null) continue;
 
     candidates.push({ sender, recipient, amountRaw });
   }
@@ -74,14 +75,15 @@ async function checkAsset(asset: AssetConfig, events: FlatEvents, txHash: string
   // A tx can legitimately contain multiple qualifying transfers (e.g.
   // multi-send). Check each one independently against the threshold.
   for (const { sender, recipient, amountRaw } of candidates) {
-    const humanAmount = parseFloat(amountRaw) / Math.pow(10, asset.decimals);
+    const humanAmount = formatRawAmount(amountRaw, asset.decimals);
+    const threshold = formatRawAmount(asset.minThresholdRaw, asset.decimals);
 
     console.log(
       `    ${sender.slice(0, 12)}... -> ${recipient.slice(0, 12)}...  ` +
-      `${humanAmount.toLocaleString()} ${asset.symbol} (threshold: ${asset.minThreshold})`
+      `${humanAmount} ${asset.symbol} (threshold: ${threshold})`
     );
 
-    if (humanAmount < asset.minThreshold) {
+    if (amountRaw < asset.minThresholdRaw) {
       continue;
     }
 
@@ -90,8 +92,8 @@ async function checkAsset(asset: AssetConfig, events: FlatEvents, txHash: string
     await sendAlert(
       asset.symbol,
       asset.displayDenom,
-      humanAmount,
       amountRaw,
+      asset.decimals,
       sender,
       recipient,
       txHash,
